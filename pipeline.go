@@ -1,11 +1,14 @@
 package pipeliner
 
+import "sync"
+
 const DefaultMaxStages = 200
 
 type Pipeline[T any] struct {
 	fail_on_error bool
-	Stages        []Stage[T]
-	MaxStages     int
+	lock          sync.RWMutex
+	stages        []Stage[T]
+	max_stages    int
 }
 
 func NewPipeline[T any]() *Pipeline[T] {
@@ -13,14 +16,22 @@ func NewPipeline[T any]() *Pipeline[T] {
 }
 
 func newPipeline[T any](fail_on_pattern_error bool) *Pipeline[T] {
-	return &Pipeline[T]{Stages: []Stage[T]{}, fail_on_error: fail_on_pattern_error, MaxStages: DefaultMaxStages}
+	return &Pipeline[T]{stages: []Stage[T]{}, fail_on_error: fail_on_pattern_error, max_stages: DefaultMaxStages, lock: sync.RWMutex{}}
+}
+
+func (p *Pipeline[T]) SetMaxStages(max int) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.max_stages = max
 }
 
 func (p *Pipeline[T]) canAddStage(stage Stage[T]) error {
-	if len(p.Stages) == p.MaxStages {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	if len(p.stages) == p.max_stages {
 		return ErrMaxStagesExceeded
 	}
-	for _, s := range p.Stages {
+	for _, s := range p.stages {
 		if s.Name == stage.Name {
 			return ErrStageNameExists
 		}
@@ -33,7 +44,7 @@ func (p *Pipeline[T]) RegisterStageLast(stage Stage[T]) error {
 		return err
 	}
 
-	p.Stages = append(p.Stages, stage)
+	p.stages = append(p.stages, stage)
 	return nil
 }
 
@@ -41,7 +52,7 @@ func (p *Pipeline[T]) RegisterStageFirst(stage Stage[T]) error {
 	if err := p.canAddStage(stage); err != nil {
 		return err
 	}
-	p.Stages = append([]Stage[T]{stage}, p.Stages...)
+	p.stages = append([]Stage[T]{stage}, p.stages...)
 	return nil
 }
 
@@ -49,14 +60,16 @@ func (p *Pipeline[T]) RegisterStageAt(index int, stage Stage[T]) error {
 	if err := p.canAddStage(stage); err != nil {
 		return err
 	}
-	p.Stages = append(p.Stages[:index], append([]Stage[T]{stage}, p.Stages[index:]...)...)
+	p.stages = append(p.stages[:index], append([]Stage[T]{stage}, p.stages[index:]...)...)
 	return nil
 }
 
 func (p *Pipeline[T]) RemoveStage(name string) error {
-	for i, stage := range p.Stages {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	for i, stage := range p.stages {
 		if stage.Name == name {
-			p.Stages = append(p.Stages[:i], p.Stages[i+1:]...)
+			p.stages = append(p.stages[:i], p.stages[i+1:]...)
 			return nil
 		}
 	}
@@ -64,8 +77,10 @@ func (p *Pipeline[T]) RemoveStage(name string) error {
 }
 
 func (p *Pipeline[T]) execute(data T, keepActions bool) ([]ActionResult[T], error) {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
 	var results []ActionResult[T]
-	for i, stage := range p.Stages {
+	for i, stage := range p.stages {
 		matched, err := stage.PatternMatcher(data)
 		if err != nil {
 			if p.fail_on_error {
@@ -76,7 +91,7 @@ func (p *Pipeline[T]) execute(data T, keepActions bool) ([]ActionResult[T], erro
 		if matched {
 			result := stage.Action(data)
 			if keepActions {
-				result.StageOfOrigin = &p.Stages[i]
+				result.StageOfOrigin = &p.stages[i]
 				results = append(results, result)
 			}
 			if !result.Continue {
