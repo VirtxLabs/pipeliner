@@ -2,6 +2,7 @@ package pipeliner
 
 import (
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -122,7 +123,6 @@ func TestPipelineMiddlewareActionTracking(t *testing.T) {
 			})
 		}
 	}
-	t.Logf("%p:%p", &greaterThanFiveStage, &evenStage)
 
 	for _, a := range actionTracker {
 		t.Logf("Stage: %s, Success: %v, Continue: %v, Message: %v, Data: %v", a.StageOfOrigin.Name, a.Success, a.Continue, a.Message, a.Data)
@@ -148,4 +148,63 @@ func TestPipelineMiddlewareActionTracking(t *testing.T) {
 			t.Errorf("Expected %v but got %v", expected[i].Data, a.Data)
 		}
 	}
+}
+func TestPipelineMultithreading(t *testing.T) {
+	p := NewPipeline[int]()
+	if p == nil {
+		t.Error("Pipeline not created")
+	}
+	results := []int{}
+	resultsLock := sync.Mutex{}
+	action := func(i int) ActionResult[int] {
+		resultsLock.Lock()
+		defer resultsLock.Unlock()
+		results = append(results, i)
+		return Success[int]("Success", i)
+	}
+	p.RegisterStageLast(NewStage("Even", func(i int) (bool, error) {
+		return i%2 == 0, nil
+	}, action))
+	p.RegisterStageLast(NewStage("GreaterThanFive", func(i int) (bool, error) {
+		return i > 5, nil
+	}, action))
+
+	var wg sync.WaitGroup
+	const NUM_THREADS = 10
+	const NUM_ITERATIONS = 10
+	for i := 0; i < NUM_THREADS; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for i := 0; i < NUM_ITERATIONS; i++ {
+				if err := p.Execute(i); err != nil {
+					t.Error(err)
+				}
+			}
+		}(i)
+	}
+	expectedCount := make(map[int]int)
+	for i := 0; i < NUM_ITERATIONS; i++ {
+		if i%2 == 0 {
+			expectedCount[i] += NUM_THREADS
+		}
+		if i > 5 {
+			expectedCount[i] += NUM_THREADS
+		}
+	}
+	wg.Wait()
+
+	for k, v := range createCountMap(results) {
+		if v != expectedCount[k] {
+			t.Errorf("Expected %d:%d but got %d:%d", k, expectedCount[k], k, v)
+		}
+	}
+}
+
+func createCountMap(results []int) map[int]int {
+	count := make(map[int]int)
+	for _, r := range results {
+		count[r]++
+	}
+	return count
 }

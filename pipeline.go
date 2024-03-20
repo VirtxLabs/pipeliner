@@ -80,7 +80,7 @@ func (p *Pipeline[T]) execute(data T, keepActions bool) ([]ActionResult[T], erro
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 	var results []ActionResult[T]
-	for i, stage := range p.stages {
+	for _, stage := range p.stages {
 		matched, err := stage.PatternMatcher(data)
 		if err != nil {
 			if p.fail_on_error {
@@ -91,7 +91,7 @@ func (p *Pipeline[T]) execute(data T, keepActions bool) ([]ActionResult[T], erro
 		if matched {
 			result := stage.Action(data)
 			if keepActions {
-				result.StageOfOrigin = &p.stages[i]
+				result.StageOfOrigin = &stage
 				results = append(results, result)
 			}
 			if !result.Continue {
